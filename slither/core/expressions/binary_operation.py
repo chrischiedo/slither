@@ -41,7 +41,7 @@ class BinaryOperationType(Enum):
     RIGHT_SHIFT_ARITHMETIC = 23
 
     @staticmethod
-    def get_type(operation_type: "BinaryOperation"):
+    def get_type(operation_type: str):
         if operation_type == "**":
             return BinaryOperationType.POWER
         if operation_type == "*":

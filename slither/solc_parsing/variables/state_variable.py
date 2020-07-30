@@ -2,10 +2,11 @@ from typing import Dict
 
 from .variable_declaration import VariableDeclarationSolc
 from slither.core.variables.state_variable import StateVariable
+from ..types.types import VariableDeclaration
 
 
 class StateVariableSolc(VariableDeclarationSolc):
-    def __init__(self, variable: StateVariable, variable_data: Dict):
+    def __init__(self, variable: StateVariable, variable_data: VariableDeclaration):
         super(StateVariableSolc, self).__init__(variable, variable_data)
 
     @property

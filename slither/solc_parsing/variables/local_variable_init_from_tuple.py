@@ -1,11 +1,10 @@
-from typing import Dict
-
-from .variable_declaration import VariableDeclarationSolc
 from slither.core.variables.local_variable_init_from_tuple import LocalVariableInitFromTuple
+from .variable_declaration import VariableDeclarationSolc
+from ..types.types import VariableDeclarationStatement
 
 
 class LocalVariableInitFromTupleSolc(VariableDeclarationSolc):
-    def __init__(self, variable: LocalVariableInitFromTuple, variable_data: Dict, index: int):
+    def __init__(self, variable: LocalVariableInitFromTuple, variable_data: VariableDeclarationStatement, index: int):
         super(LocalVariableInitFromTupleSolc, self).__init__(variable, variable_data)
         variable.tuple_index = index
 

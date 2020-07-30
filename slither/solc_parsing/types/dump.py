@@ -9,6 +9,7 @@ def dumps(node: ASTNode) -> str:
         if isinstance(slots, str):
             slots = [slots]
         res = {slot: getattr(x, slot, None) for slot in slots}
+        res['nodeType'] = type(x).__name__
         return res
 
     return json.dumps(node, indent=2, default=default)

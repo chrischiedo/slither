@@ -158,100 +158,104 @@ def parse_type(t: Union[Dict, UnknownType], caller_context):
     elif isinstance(caller_context, FunctionSolc):
         contract = caller_context.underlying_function.contract
         contract_parser = caller_context.contract_parser
-        is_compact_ast = caller_context.is_compact_ast
+        # is_compact_ast = caller_context.is_compact_ast
     else:
         raise ParsingError(f"Incorrect caller context: {type(caller_context)}")
 
-    if is_compact_ast:
-        key = "nodeType"
-    else:
-        key = "name"
+    # if is_compact_ast:
+    #     key = "nodeType"
+    # else:
+    #     key = "name"
 
     structures = contract.structures + contract.slither.top_level_structures
     enums = contract.enums + contract.slither.top_level_enums
     contracts = contract.slither.contracts
 
+    from slither.solc_parsing.types.types import ElementaryTypeName as ET
+    if isinstance(t, ET):
+        return ElementaryType(t.name)
+
     if isinstance(t, UnknownType):
         return _find_from_type_name(t.name, contract, contracts, structures, enums)
 
-    elif t[key] == "ElementaryTypeName":
-        if is_compact_ast:
-            return ElementaryType(t["name"])
-        return ElementaryType(t["attributes"][key])
-
-    elif t[key] == "UserDefinedTypeName":
-        if is_compact_ast:
-            return _find_from_type_name(
-                t["typeDescriptions"]["typeString"], contract, contracts, structures, enums
-            )
-
-        # Determine if we have a type node (otherwise we use the name node, as some older solc did not have 'type').
-        type_name_key = "type" if "type" in t["attributes"] else key
-        return _find_from_type_name(
-            t["attributes"][type_name_key], contract, contracts, structures, enums
-        )
-
-    elif t[key] == "ArrayTypeName":
-        length = None
-        if is_compact_ast:
-            if t["length"]:
-                length = parse_expression(t["length"], caller_context)
-            array_type = parse_type(t["baseType"], contract_parser)
-        else:
-            if len(t["children"]) == 2:
-                length = parse_expression(t["children"][1], caller_context)
-            else:
-                assert len(t["children"]) == 1
-            array_type = parse_type(t["children"][0], contract_parser)
-        return ArrayType(array_type, length)
-
-    elif t[key] == "Mapping":
-
-        if is_compact_ast:
-            mappingFrom = parse_type(t["keyType"], contract_parser)
-            mappingTo = parse_type(t["valueType"], contract_parser)
-        else:
-            assert len(t["children"]) == 2
-
-            mappingFrom = parse_type(t["children"][0], contract_parser)
-            mappingTo = parse_type(t["children"][1], contract_parser)
-
-        return MappingType(mappingFrom, mappingTo)
-
-    elif t[key] == "FunctionTypeName":
-
-        if is_compact_ast:
-            params = t["parameterTypes"]
-            return_values = t["returnParameterTypes"]
-            index = "parameters"
-        else:
-            assert len(t["children"]) == 2
-            params = t["children"][0]
-            return_values = t["children"][1]
-            index = "children"
-
-        assert params[key] == "ParameterList"
-        assert return_values[key] == "ParameterList"
-
-        params_vars: List[FunctionTypeVariable] = []
-        return_values_vars: List[FunctionTypeVariable] = []
-        for p in params[index]:
-            var = FunctionTypeVariable()
-            var.set_offset(p["src"], caller_context.slither)
-
-            var_parser = FunctionTypeVariableSolc(var, p)
-            var_parser.analyze(caller_context)
-
-            params_vars.append(var)
-        for p in return_values[index]:
-            var = FunctionTypeVariable()
-            var.set_offset(p["src"], caller_context.slither)
-
-            var_parser = FunctionTypeVariableSolc(var, p)
-            var_parser.analyze(caller_context)
-
-            return_values_vars.append(var)
-
-        return FunctionType(params_vars, return_values_vars)
+    # elif t[key] == "ElementaryTypeName":
+    #     if is_compact_ast:
+    #         return ElementaryType(t["name"])
+    #     return ElementaryType(t["attributes"][key])
+    # 
+    # elif t[key] == "UserDefinedTypeName":
+    #     if is_compact_ast:
+    #         return _find_from_type_name(
+    #             t["typeDescriptions"]["typeString"], contract, contracts, structures, enums
+    #         )
+    # 
+    #     # Determine if we have a type node (otherwise we use the name node, as some older solc did not have 'type').
+    #     type_name_key = "type" if "type" in t["attributes"] else key
+    #     return _find_from_type_name(
+    #         t["attributes"][type_name_key], contract, contracts, structures, enums
+    #     )
+    # 
+    # elif t[key] == "ArrayTypeName":
+    #     length = None
+    #     if is_compact_ast:
+    #         if t["length"]:
+    #             length = parse_expression(t["length"], caller_context)
+    #         array_type = parse_type(t["baseType"], contract_parser)
+    #     else:
+    #         if len(t["children"]) == 2:
+    #             length = parse_expression(t["children"][1], caller_context)
+    #         else:
+    #             assert len(t["children"]) == 1
+    #         array_type = parse_type(t["children"][0], contract_parser)
+    #     return ArrayType(array_type, length)
+    # 
+    # elif t[key] == "Mapping":
+    # 
+    #     if is_compact_ast:
+    #         mappingFrom = parse_type(t["keyType"], contract_parser)
+    #         mappingTo = parse_type(t["valueType"], contract_parser)
+    #     else:
+    #         assert len(t["children"]) == 2
+    # 
+    #         mappingFrom = parse_type(t["children"][0], contract_parser)
+    #         mappingTo = parse_type(t["children"][1], contract_parser)
+    # 
+    #     return MappingType(mappingFrom, mappingTo)
+    # 
+    # elif t[key] == "FunctionTypeName":
+    # 
+    #     if is_compact_ast:
+    #         params = t["parameterTypes"]
+    #         return_values = t["returnParameterTypes"]
+    #         index = "parameters"
+    #     else:
+    #         assert len(t["children"]) == 2
+    #         params = t["children"][0]
+    #         return_values = t["children"][1]
+    #         index = "children"
+    # 
+    #     assert params[key] == "ParameterList"
+    #     assert return_values[key] == "ParameterList"
+    # 
+    #     params_vars: List[FunctionTypeVariable] = []
+    #     return_values_vars: List[FunctionTypeVariable] = []
+    #     for p in params[index]:
+    #         var = FunctionTypeVariable()
+    #         var.set_offset(p["src"], caller_context.slither)
+    # 
+    #         var_parser = FunctionTypeVariableSolc(var, p)
+    #         var_parser.analyze(caller_context)
+    # 
+    #         params_vars.append(var)
+    #     for p in return_values[index]:
+    #         var = FunctionTypeVariable()
+    #         var.set_offset(p["src"], caller_context.slither)
+    # 
+    #         var_parser = FunctionTypeVariableSolc(var, p)
+    #         var_parser.analyze(caller_context)
+    # 
+    #         return_values_vars.append(var)
+    # 
+    #     return FunctionType(params_vars, return_values_vars)
 
     raise ParsingError("Type name not found " + str(t))

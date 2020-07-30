@@ -6,6 +6,7 @@ from typing import List, Dict
 
 from slither.core.declarations import Contract
 from slither.exceptions import SlitherException
+from slither.solc_parsing.types.types import SourceUnit, ContractDefinition, PragmaDirective, ImportDirective
 
 logging.basicConfig()
 logger = logging.getLogger("SlitherSolcParsing")
@@ -106,6 +107,11 @@ class SlitherSolc:
             return False
 
     def parse_contracts_from_loaded_json(self, data_loaded: Dict, filename: str):
+        from slither.solc_parsing.types.sniffer import sniff
+        from slither.solc_parsing.types.dump import dumps
+        node = sniff(data_loaded)(data_loaded)
+        print(dumps(node))
+
         if "nodeType" in data_loaded:
             self._is_compact_ast = True
 
@@ -118,38 +124,29 @@ class SlitherSolc:
             self._solc_version = "0.3"
             logger.error("solc <0.4 is not supported")
             return
-        elif data_loaded[self.get_key()] == "SourceUnit":
+        elif isinstance(node, SourceUnit):
             self._solc_version = "0.4"
-            self._parse_source_unit(data_loaded, filename)
+            self._parse_source_unit(node, filename)
         else:
             logger.error("solc version is not supported")
             return
 
-        for contract_data in data_loaded[self.get_children()]:
-
-            assert contract_data[self.get_key()] in [
-                "ContractDefinition",
-                "PragmaDirective",
-                "ImportDirective",
-                "StructDefinition",
-                "EnumDefinition",
-            ]
-            if contract_data[self.get_key()] == "ContractDefinition":
+        for child in node.nodes:
+            if isinstance(child, ContractDefinition):
                 contract = Contract()
-                contract_parser = ContractSolc(self, contract, contract_data)
-                if "src" in contract_data:
-                    contract.set_offset(contract_data["src"], self._core)
+                contract_parser = ContractSolc(self, contract, child)
+                if child.src:
+                    contract.set_offset(child.src, self._core)
 
                 self._underlying_contract_to_parser[contract] = contract_parser
-
-            elif contract_data[self.get_key()] == "PragmaDirective":
+            elif isinstance(child, PragmaDirective):
                 if self._is_compact_ast:
                     pragma = Pragma(contract_data["literals"])
                 else:
                     pragma = Pragma(contract_data["attributes"]["literals"])
                 pragma.set_offset(contract_data["src"], self._core)
                 self._core.pragma_directives.append(pragma)
-            elif contract_data[self.get_key()] == "ImportDirective":
+            elif isinstance(child, ImportDirective):
                 if self.is_compact_ast:
                     import_directive = Import(contract_data["absolutePath"])
                 else:
@@ -185,10 +182,7 @@ class SlitherSolc:
 
                 self._underlying_contract_to_parser[contract] = top_level_contract
 
-    def _parse_source_unit(self, data: Dict, filename: str):
-        if data[self.get_key()] != "SourceUnit":
-            return -1  # handle solc prior 0.3.6
-
+    def _parse_source_unit(self, data: SourceUnit, filename: str):
         # match any char for filename
         # filename can contain space, /, -, ..
         name_candidates = re.findall("=+ (.+) =+", filename)
@@ -199,8 +193,8 @@ class SlitherSolc:
             name = filename
 
         sourceUnit = -1  # handle old solc, or error
-        if "src" in data:
-            sourceUnit_candidates = re.findall("[0-9]*:[0-9]*:([0-9]*)", data["src"])
+        if data.src:
+            sourceUnit_candidates = re.findall("[0-9]*:[0-9]*:([0-9]*)", data.src)
             if len(sourceUnit_candidates) == 1:
                 sourceUnit = int(sourceUnit_candidates[0])
         if sourceUnit == -1:
@@ -485,15 +479,15 @@ Please rename it, this name is reserved for Slither's internals"""
             contract.add_constructor_variables()
 
             for func in contract.functions + contract.modifiers:
-                try:
-                    func.generate_slithir_and_analyze()
-                except AttributeError:
-                    # This can happens for example if there is a call to an interface
-                    # And the interface is redefined due to contract's name reuse
-                    # But the available version misses some functions
-                    self._underlying_contract_to_parser[contract].log_incorrect_parsing(
-                        f"Impossible to generate IR for {contract.name}.{func.name}"
-                    )
+                # try:
+                func.generate_slithir_and_analyze()
+                # except AttributeError:
+                #     # This can happens for example if there is a call to an interface
+                #     # And the interface is redefined due to contract's name reuse
+                #     # But the available version misses some functions
+                #     self._underlying_contract_to_parser[contract].log_incorrect_parsing(
+                #         f"Impossible to generate IR for {contract.name}.{func.name}"
+                #     )
 
             contract.convert_expression_to_slithir_ssa()
         self._core.propagate_function_calls()
