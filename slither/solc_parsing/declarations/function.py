@@ -274,6 +274,10 @@ class FunctionSolc:
 
             if body and body[self.get_key()] == "Block":
                 self._function.is_implemented = True
+                from slither.solc_parsing.types.sniffer import sniff
+                from slither.solc_parsing.types.dump import dumps
+                node = sniff(body)(body)
+                print(dumps(node))
                 self._parse_cfg(body)
 
             for modifier in self._functionNotParsed["modifiers"]:
@@ -284,6 +288,10 @@ class FunctionSolc:
             self._function.is_implemented = False
             for child in children[2:]:
                 if child[self.get_key()] == "Block":
+                    from slither.solc_parsing.types.sniffer import sniff
+                    from slither.solc_parsing.types.dump import dumps
+                    node = sniff(child)(child)
+                    print(dumps(node))
                     self._function.is_implemented = True
                     self._parse_cfg(child)
 
