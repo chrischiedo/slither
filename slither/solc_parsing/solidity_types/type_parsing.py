@@ -1,21 +1,18 @@
 import logging
-from typing import List, TYPE_CHECKING, Union, Dict
-
-from slither.core.solidity_types.elementary_type import ElementaryType, ElementaryTypeName
-from slither.core.solidity_types.type import Type
-from slither.core.solidity_types.user_defined_type import UserDefinedType
-from slither.core.solidity_types.array_type import ArrayType
-from slither.core.solidity_types.mapping_type import MappingType
-from slither.core.solidity_types.function_type import FunctionType
-
-from slither.core.variables.function_type_variable import FunctionTypeVariable
+import re
+from typing import List, TYPE_CHECKING, Union
 
 from slither.core.declarations.contract import Contract
-
 from slither.core.expressions.literal import Literal
-
+from slither.core.solidity_types.array_type import ArrayType
+from slither.core.solidity_types.elementary_type import ElementaryType, ElementaryTypeName
+from slither.core.solidity_types.function_type import FunctionType
+from slither.core.solidity_types.mapping_type import MappingType
+from slither.core.solidity_types.type import Type
+from slither.core.solidity_types.user_defined_type import UserDefinedType
+from slither.core.variables.function_type_variable import FunctionTypeVariable
 from slither.solc_parsing.exceptions import ParsingError
-import re
+from slither.solc_parsing.types.types import TypeName
 
 if TYPE_CHECKING:
     from slither.core.declarations import Structure, Enum
@@ -23,25 +20,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger("TypeParsing")
 
 
-class UnknownType:
-    def __init__(self, name):
-        self._name = name
-
-    @property
-    def name(self):
-        return self._name
-
-
 def _find_from_type_name(
-    name: str,
-    contract: Contract,
-    contracts: List[Contract],
-    structures: List["Structure"],
-    enums: List["Enum"],
+        name: str,
+        contract: Contract,
+        contracts: List[Contract],
+        structures: List["Structure"],
+        enums: List["Enum"],
 ) -> Type:
     name_elementary = name.split(" ")[0]
     if "[" in name_elementary:
-        name_elementary = name_elementary[0 : name_elementary.find("[")]
+        name_elementary = name_elementary[0: name_elementary.find("[")]
     if name_elementary in ElementaryTypeName:
         depth = name.count("[")
         if depth:
@@ -53,9 +41,9 @@ def _find_from_type_name(
     # Ex: a structure with the name of a contract
     name_contract = name
     if name_contract.startswith("contract "):
-        name_contract = name_contract[len("contract ") :]
+        name_contract = name_contract[len("contract "):]
     if name_contract.startswith("library "):
-        name_contract = name_contract[len("library ") :]
+        name_contract = name_contract[len("library "):]
     var_type = next((c for c in contracts if c.name == name_contract), None)
 
     if not var_type:
@@ -66,7 +54,7 @@ def _find_from_type_name(
         # any contract can refer to another contract's enum
         enum_name = name
         if enum_name.startswith("enum "):
-            enum_name = enum_name[len("enum ") :]
+            enum_name = enum_name[len("enum "):]
         all_enums = [c.enums for c in contracts]
         all_enums = [item for sublist in all_enums for item in sublist]
         var_type = next((e for e in all_enums if e.name == enum_name), None)
@@ -76,7 +64,7 @@ def _find_from_type_name(
         # any contract can refer to another contract's structure
         name_struct = name
         if name_struct.startswith("struct "):
-            name_struct = name_struct[len("struct ") :]
+            name_struct = name_struct[len("struct "):]
             name_struct = name_struct.split(" ")[0]  # remove stuff like storage pointer at the end
         all_structures = [c.structures for c in contracts]
         all_structures = [item for sublist in all_structures for item in sublist]
@@ -144,7 +132,7 @@ def _find_from_type_name(
     return UserDefinedType(var_type)
 
 
-def parse_type(t: Union[Dict, UnknownType], caller_context):
+def parse_type(t: Union[str, TypeName], caller_context) -> Type:
     # local import to avoid circular dependency
     from slither.solc_parsing.expressions.expression_parsing import parse_expression
     from slither.solc_parsing.variables.function_type_variable import FunctionTypeVariableSolc
@@ -154,108 +142,60 @@ def parse_type(t: Union[Dict, UnknownType], caller_context):
     if isinstance(caller_context, ContractSolc):
         contract = caller_context.underlying_contract
         contract_parser = caller_context
-        is_compact_ast = caller_context.is_compact_ast
     elif isinstance(caller_context, FunctionSolc):
         contract = caller_context.underlying_function.contract
         contract_parser = caller_context.contract_parser
-        # is_compact_ast = caller_context.is_compact_ast
     else:
         raise ParsingError(f"Incorrect caller context: {type(caller_context)}")
-
-    # if is_compact_ast:
-    #     key = "nodeType"
-    # else:
-    #     key = "name"
 
     structures = contract.structures + contract.slither.top_level_structures
     enums = contract.enums + contract.slither.top_level_enums
     contracts = contract.slither.contracts
 
-    from slither.solc_parsing.types.types import ElementaryTypeName as ET
-    if isinstance(t, ET):
+    from slither.solc_parsing.types.types import \
+        ElementaryTypeName as ETN, \
+        UserDefinedTypeName as UDTN, \
+        ArrayTypeName as ATN, \
+        Mapping as M, \
+        FunctionTypeName as FTN
+    if isinstance(t, ETN):
         return ElementaryType(t.name)
-
-    if isinstance(t, UnknownType):
+    elif isinstance(t, UDTN):
         return _find_from_type_name(t.name, contract, contracts, structures, enums)
+    elif isinstance(t, ATN):
+        if t.len:
+            length = parse_expression(t.len, caller_context)
+        else:
+            length = None
+        array_type = parse_type(t.base, contract_parser)
+        return ArrayType(array_type, length)
+    elif isinstance(t, M):
+        key = parse_type(t.key, contract_parser)
+        val = parse_type(t.value, contract_parser)
+        return MappingType(key, val)
+    elif isinstance(t, FTN):
+        params_vars: List[FunctionTypeVariable] = []
+        return_values_vars: List[FunctionTypeVariable] = []
+        for p in t.params.params:
+            var = FunctionTypeVariable()
+            var.set_offset(p.src, caller_context.slither)
 
-    # elif t[key] == "ElementaryTypeName":
-    #     if is_compact_ast:
-    #         return ElementaryType(t["name"])
-    #     return ElementaryType(t["attributes"][key])
-    # 
-    # elif t[key] == "UserDefinedTypeName":
-    #     if is_compact_ast:
-    #         return _find_from_type_name(
-    #             t["typeDescriptions"]["typeString"], contract, contracts, structures, enums
-    #         )
-    # 
-    #     # Determine if we have a type node (otherwise we use the name node, as some older solc did not have 'type').
-    #     type_name_key = "type" if "type" in t["attributes"] else key
-    #     return _find_from_type_name(
-    #         t["attributes"][type_name_key], contract, contracts, structures, enums
-    #     )
-    # 
-    # elif t[key] == "ArrayTypeName":
-    #     length = None
-    #     if is_compact_ast:
-    #         if t["length"]:
-    #             length = parse_expression(t["length"], caller_context)
-    #         array_type = parse_type(t["baseType"], contract_parser)
-    #     else:
-    #         if len(t["children"]) == 2:
-    #             length = parse_expression(t["children"][1], caller_context)
-    #         else:
-    #             assert len(t["children"]) == 1
-    #         array_type = parse_type(t["children"][0], contract_parser)
-    #     return ArrayType(array_type, length)
-    # 
-    # elif t[key] == "Mapping":
-    # 
-    #     if is_compact_ast:
-    #         mappingFrom = parse_type(t["keyType"], contract_parser)
-    #         mappingTo = parse_type(t["valueType"], contract_parser)
-    #     else:
-    #         assert len(t["children"]) == 2
-    # 
-    #         mappingFrom = parse_type(t["children"][0], contract_parser)
-    #         mappingTo = parse_type(t["children"][1], contract_parser)
-    # 
-    #     return MappingType(mappingFrom, mappingTo)
-    # 
-    # elif t[key] == "FunctionTypeName":
-    # 
-    #     if is_compact_ast:
-    #         params = t["parameterTypes"]
-    #         return_values = t["returnParameterTypes"]
-    #         index = "parameters"
-    #     else:
-    #         assert len(t["children"]) == 2
-    #         params = t["children"][0]
-    #         return_values = t["children"][1]
-    #         index = "children"
-    # 
-    #     assert params[key] == "ParameterList"
-    #     assert return_values[key] == "ParameterList"
-    # 
-    #     params_vars: List[FunctionTypeVariable] = []
-    #     return_values_vars: List[FunctionTypeVariable] = []
-    #     for p in params[index]:
-    #         var = FunctionTypeVariable()
-    #         var.set_offset(p["src"], caller_context.slither)
-    # 
-    #         var_parser = FunctionTypeVariableSolc(var, p)
-    #         var_parser.analyze(caller_context)
-    # 
-    #         params_vars.append(var)
-    #     for p in return_values[index]:
-    #         var = FunctionTypeVariable()
-    #         var.set_offset(p["src"], caller_context.slither)
-    # 
-    #         var_parser = FunctionTypeVariableSolc(var, p)
-    #         var_parser.analyze(caller_context)
-    # 
-    #         return_values_vars.append(var)
-    # 
-    #     return FunctionType(params_vars, return_values_vars)
+            var_parser = FunctionTypeVariableSolc(var, p)
+            var_parser.analyze(caller_context)
+
+            params_vars.append(var)
+
+        for p in t.rets.params:
+            var = FunctionTypeVariable()
+            var.set_offset(p.src, caller_context.slither)
+
+            var_parser = FunctionTypeVariableSolc(var, p)
+            var_parser.analyze(caller_context)
+
+            return_values_vars.append(var)
+
+        return FunctionType(params_vars, return_values_vars)
+    elif isinstance(t, str):
+        return _find_from_type_name(t, contract, contracts, structures, enums)
 
     raise ParsingError("Type name not found " + str(t))

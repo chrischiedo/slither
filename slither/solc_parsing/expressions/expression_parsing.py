@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import Dict, TYPE_CHECKING, Optional, Union
+from typing import Dict, TYPE_CHECKING, Optional, Union, Callable
 
 from slither.core.declarations import Event, Enum, Structure
 from slither.core.declarations.contract import Contract
@@ -36,7 +36,24 @@ from slither.core.expressions.unary_operation import UnaryOperation, UnaryOperat
 from slither.core.solidity_types import ArrayType, ElementaryType, FunctionType, MappingType
 from slither.core.variables.variable import Variable
 from slither.solc_parsing.exceptions import ParsingError, VariableNotFound
-from slither.solc_parsing.solidity_types.type_parsing import UnknownType, parse_type
+from slither.solc_parsing.solidity_types.type_parsing import parse_type
+from slither.solc_parsing.types.types import \
+    Expression as ExpressionT, \
+    Literal as LiteralT, \
+    FunctionCallOptions as FunctionCallOptionsT, \
+    NewExpression as NewExpressionT, \
+    ModifierInvocation as ModifierInvocationT, \
+    IndexAccess as IndexAccessT, \
+    IndexRangeAccess as IndexRangeAccessT, \
+    ElementaryTypeNameExpression as ElementaryTypeNameExpressionT, \
+    Conditional as ConditionalT, \
+    TupleExpression as TupleExpressionT, \
+    Assignment as AssignmentT, \
+    UnaryOperation as UnaryOperationT, \
+    BinaryOperation as BinaryOperationT, \
+    Identifier as IdentifierT, \
+    MemberAccess as MemberAccessT, \
+    FunctionCall as FunctionCallT, ArrayTypeName, ElementaryTypeName, UserDefinedTypeName
 
 if TYPE_CHECKING:
     from slither.core.expressions.expression import Expression
@@ -221,6 +238,21 @@ def find_variable(
     raise VariableNotFound("Variable not found: {} (context {})".format(var_name, caller_context))
 
 
+def parse_super_name(expression: MemberAccessT) -> str:
+    arguments = expression.type_str
+    base_name = expression.member_name
+
+    assert arguments.startswith("function ")
+    # remove function (...()
+    arguments = arguments[len("function "):]
+
+    arguments = filter_name(arguments)
+    if " " in arguments:
+        arguments = arguments[: arguments.find(" ")]
+
+    return base_name + arguments
+
+
 # endregion
 ###################################################################################
 ###################################################################################
@@ -265,7 +297,6 @@ def filter_name(value: str) -> str:
 
 
 # endregion
-
 ###################################################################################
 ###################################################################################
 # region Parsing
@@ -273,55 +304,24 @@ def filter_name(value: str) -> str:
 ###################################################################################
 
 
-def parse_super_name(expression: Dict, is_compact_ast: bool) -> str:
-    if is_compact_ast:
-        assert expression["nodeType"] == "MemberAccess"
-        base_name = expression["memberName"]
-        arguments = expression["typeDescriptions"]["typeString"]
-    else:
-        assert expression["name"] == "MemberAccess"
-        attributes = expression["attributes"]
-        base_name = attributes["member_name"]
-        arguments = attributes["type"]
-
-    assert arguments.startswith("function ")
-    # remove function (...()
-    arguments = arguments[len("function "):]
-
-    arguments = filter_name(arguments)
-    if " " in arguments:
-        arguments = arguments[: arguments.find(" ")]
-
-    return base_name + arguments
+def parse_conditional(expr: ConditionalT, ctx: CallerContext) -> "Expression":
+    cond = parse_expression(expr.condition, ctx)
+    true_expr = parse_expression(expr.true_expr, ctx)
+    false_expr = parse_expression(expr.false_expr, ctx)
+    conditional = ConditionalExpression(cond, true_expr, false_expr)
+    conditional.set_offset(expr.src, ctx.slither)
+    return conditional
 
 
-def _parse_elementary_type_name_expression(
-        expression: Dict, is_compact_ast: bool, caller_context
-) -> ElementaryTypeNameExpression:
-    # nop exression
-    # uint;
-    if is_compact_ast:
-        value = expression["typeName"]
-    else:
-        assert "children" not in expression
-        value = expression["attributes"]["value"]
-    if isinstance(value, dict):
-        t = parse_type(value, caller_context)
-    else:
-        t = parse_type(UnknownType(value), caller_context)
-    e = ElementaryTypeNameExpression(t)
-    e.set_offset(expression["src"], caller_context.slither)
-    return e
+def parse_assignment(expr: AssignmentT, ctx: CallerContext) -> "Expression":
+    lhs = parse_expression(expr.left, ctx)
+    rhs = parse_expression(expr.right, ctx)
+    op = AssignmentOperationType.get_type(expr.operator)
+    op_type = expr.type_str
 
-
-from slither.solc_parsing.types.types import Expression as ExpressionType, Literal as LiteralT, \
-    TupleExpression as TupleExpressionT, \
-    Assignment as AssignmentT, \
-    UnaryOperation as UnaryOperationT, \
-    BinaryOperation as BinaryOperationT, \
-    Identifier as IdentifierT, \
-    MemberAccess as MemberAccessT, \
-    FunctionCall as FunctionCallT
+    assignement = AssignmentOperation(lhs, rhs, op, op_type)
+    assignement.set_offset(expr.src, ctx.slither)
+    return assignement
 
 
 def parse_tuple_expression(expr: TupleExpressionT, ctx: CallerContext) -> "Expression":
@@ -354,17 +354,6 @@ def parse_tuple_expression(expr: TupleExpressionT, ctx: CallerContext) -> "Expre
     return t
 
 
-def parse_assignment(expr: AssignmentT, ctx: CallerContext) -> "Expression":
-    lhs = parse_expression(expr.left, ctx)
-    rhs = parse_expression(expr.right, ctx)
-    op = AssignmentOperationType.get_type(expr.operator)
-    op_type = expr.type_str
-
-    assignement = AssignmentOperation(lhs, rhs, op, op_type)
-    assignement.set_offset(expr.src, ctx.slither)
-    return assignement
-
-
 def parse_unary_operation(expr: UnaryOperationT, ctx: CallerContext) -> "Expression":
     operation_type = UnaryOperationType.get_type(expr.operator, expr.is_prefix)
     expression = parse_expression(expr.expression, ctx)
@@ -372,6 +361,178 @@ def parse_unary_operation(expr: UnaryOperationT, ctx: CallerContext) -> "Express
     unary_op = UnaryOperation(expression, operation_type)
     unary_op.set_offset(expr.src, ctx.slither)
     return unary_op
+
+
+def parse_binary_operation(expr: BinaryOperationT, ctx: CallerContext) -> "Expression":
+    operation_type = BinaryOperationType.get_type(expr.operator)
+    left = parse_expression(expr.left, ctx)
+    right = parse_expression(expr.right, ctx)
+
+    binary_op = BinaryOperation(left, right, operation_type)
+    binary_op.set_offset(expr.src, ctx.slither)
+    return binary_op
+
+
+def parse_function_call(expr: FunctionCallT, ctx: CallerContext) -> "Expression":
+    src = expr.src
+    type_conversion = expr.kind == "typeConversion"
+    type_return = expr.type_str
+
+    if type_conversion:
+        type_call = parse_type(type_return, ctx)
+        expression_to_parse = expr.arguments[0]
+
+        expression = parse_expression(expression_to_parse, ctx)
+        t = TypeConversion(expression, type_call)
+        t.set_offset(src, ctx.slither)
+        return t
+
+    call_gas = None
+    call_value = None
+    call_salt = None
+    called = parse_expression(expr.expression, ctx)
+
+    # If the next expression is a FunctionCallOptions
+    # We can here the gas/value information
+    # This is only available if the syntax is {gas: , value: }
+    # For the .gas().value(), the member are considered as function call
+    # And converted later to the correct info (convert.py)
+    if isinstance(expr.expression, FunctionCallOptionsT):
+        call_with_options = expr.expression
+        for idx, name in enumerate(call_with_options.names):
+            option = parse_expression(call_with_options.options[idx], ctx)
+            if name == "value":
+                call_value = option
+            if name == "gas":
+                call_gas = option
+            if name == "salt":
+                call_salt = option
+
+    arguments = [parse_expression(a, ctx) for a in expr.arguments]
+
+    if isinstance(called, SuperCallExpression):
+        sp = SuperCallExpression(called, arguments, type_return)
+        sp.set_offset(expr.src, ctx.slither)
+        return sp
+    call_expression = CallExpression(called, arguments, type_return)
+    call_expression.set_offset(src, ctx.slither)
+
+    # Only available if the syntax {gas:, value:} was used
+    call_expression.call_gas = call_gas
+    call_expression.call_value = call_value
+    call_expression.call_salt = call_salt
+    return call_expression
+
+
+def parse_function_call_options(expr: FunctionCallOptionsT, ctx: CallerContext) -> "Expression":
+    # call/gas info are handled in parse_call
+    called = parse_expression(expr.expression, ctx)
+    assert isinstance(called, (MemberAccess, NewContract))
+    return called
+
+
+def parse_new_expression(expr: NewExpressionT, ctx: CallerContext) -> "Expression":
+    typename = expr.typename
+
+    if isinstance(typename, ArrayTypeName):
+        depth = 0
+        while isinstance(typename, ArrayTypeName):
+            typename = typename.base
+            depth += 1
+
+        array_type = parse_type(typename, ctx)
+        array = NewArray(depth, array_type)
+        array.set_offset(expr.src, ctx.slither)
+        return array
+    elif isinstance(typename, ElementaryTypeName):
+        new_elem = NewElementaryType(typename.name)
+        new_elem.set_offset(expr.src, ctx.slither)
+        return new_elem
+    elif isinstance(typename, UserDefinedTypeName):
+        new = NewContract(typename.name)
+        new.set_offset(expr.src, ctx.slither)
+        return new
+    else:
+        raise ParsingError("unexpected new type", typename)
+
+
+def parse_member_access(expr: MemberAccessT, ctx: CallerContext) -> "Expression":
+    member_name = expr.member_name
+    member_type = expr.type_str
+    member_expression = parse_expression(expr.expression, ctx)
+
+    # todo
+    if str(member_expression) == "super":
+        super_name = parse_super_name(expr)
+        var = find_variable(super_name, ctx, is_super=True)
+        if var is None:
+            raise VariableNotFound("Variable not found: {}".format(super_name))
+        sup = SuperIdentifier(var)
+        sup.set_offset(expr.src, ctx.slither)
+        return sup
+
+    member_access = MemberAccess(member_name, member_type, member_expression)
+    member_access.set_offset(expr.src, ctx.slither)
+    if str(member_access) in SOLIDITY_VARIABLES_COMPOSED:
+        idx = Identifier(SolidityVariableComposed(str(member_access)))
+        idx.set_offset(expr.src, ctx.slither)
+        return idx
+    return member_access
+
+
+def parse_index_access(expr: IndexAccessT, ctx: CallerContext) -> "Expression":
+    # IndexAccess is used to describe ElementaryTypeNameExpression
+    # if abi.decode is used
+    # For example, abi.decode(data, ...(uint[]) )
+    if expr.index is None:
+        ret = parse_expression(expr.base, ctx)
+        # Nested array are not yet available in abi.decode
+        if isinstance(ret, ElementaryTypeNameExpression):
+            old_type = ret.type
+            ret.type = ArrayType(old_type, None)
+        return ret
+
+    left_expression = parse_expression(expr.base, ctx)
+    right_expression = parse_expression(expr.index, ctx)
+    index = IndexAccess(left_expression, right_expression, expr.type_str)
+    index.set_offset(expr.src, ctx.slither)
+    return index
+
+
+def parse_index_range_access(expr: IndexRangeAccessT, ctx: CallerContext) -> "Expression":
+    # For now, we convert array slices to a direct array access
+    # As a result the generated IR will lose the slices information
+    # As far as I understand, array slice are only used in abi.decode
+    # https://solidity.readthedocs.io/en/v0.6.12/types.html
+    # TODO: Investigate array slices usage and implication for the IR
+    return parse_expression(expr.base, ctx)
+
+
+def parse_identifier(expr: IdentifierT, ctx: CallerContext) -> "Expression":
+    value = expr.name
+    t = expr.type_str
+
+    if t:
+        found = re.findall("[struct|enum|function|modifier] \(([\[\] ()a-zA-Z0-9\.,_]*)\)", t)
+        assert len(found) <= 1
+        if found:
+            value = value + "(" + found[0] + ")"
+            value = filter_name(value)
+
+    referenced_declaration = None  # expr.referenced_declaration
+
+    var = find_variable(value, ctx, referenced_declaration)
+
+    identifier = Identifier(var)
+    identifier.set_offset(expr.src, ctx.slither)
+    return identifier
+
+
+def parse_elementary_type_name_expression(expr: ElementaryTypeNameExpressionT, ctx: CallerContext) -> "Expression":
+    t = parse_type(expr.typename, ctx)
+    e = ElementaryTypeNameExpression(t)
+    e.set_offset(expr.src, ctx.slither)
+    return e
 
 
 def parse_literal(expr: LiteralT, ctx: CallerContext) -> "Expression":
@@ -407,270 +568,39 @@ def parse_literal(expr: LiteralT, ctx: CallerContext) -> "Expression":
     return literal
 
 
-def parse_binary_operation(expr: BinaryOperationT, ctx: CallerContext) -> "Expression":
-    operation_type = BinaryOperationType.get_type(expr.operator)
-    left = parse_expression(expr.left, ctx)
-    right = parse_expression(expr.right, ctx)
+def parse_modifier_invocation(expr: ModifierInvocationT, ctx: CallerContext) -> "Expression":
+    called = parse_expression(expr.modifier, ctx)
+    args = [parse_expression(a, ctx) for a in expr.args] if expr.args else []
 
-    binary_op = BinaryOperation(left, right, operation_type)
-    binary_op.set_offset(expr.src, ctx.slither)
-    return binary_op
-
-
-def parse_identifier(expr: IdentifierT, ctx: CallerContext) -> "Expression":
-    value = expr.name
-    t = expr.type_str
-
-    if t:
-        found = re.findall("[struct|enum|function|modifier] \(([\[\] ()a-zA-Z0-9\.,_]*)\)", t)
-        assert len(found) <= 1
-        if found:
-            value = value + "(" + found[0] + ")"
-            value = filter_name(value)
-
-    referenced_declaration = None  # expr.referenced_declaration
-
-    var = find_variable(value, ctx, referenced_declaration)
-
-    identifier = Identifier(var)
-    identifier.set_offset(expr.src, ctx.slither)
-    return identifier
+    call = CallExpression(called, args, "Modifier")
+    call.set_offset(expr.src, ctx.slither)
+    return call
 
 
-def parse_function_call(expr: FunctionCallT, ctx: CallerContext) -> "Expression":
-    src = expr.src
-    type_conversion = expr.kind == "typeConversion"
-    type_return = expr.type_str
-
-    if type_conversion:
-        type_call = parse_type(UnknownType(type_return), ctx)
-        expression_to_parse = expr.arguments[0]
-
-        expression = parse_expression(expression_to_parse, ctx)
-        t = TypeConversion(expression, type_call)
-        t.set_offset(src, ctx.slither)
-        return t
-
-    call_gas = None
-    call_value = None
-    call_salt = None
-    called = parse_expression(expr.expression, ctx)
-    # If the next expression is a FunctionCallOptions
-    # We can here the gas/value information
-    # This is only available if the syntax is {gas: , value: }
-    # For the .gas().value(), the member are considered as function call
-    # And converted later to the correct info (convert.py)
-    # todo
-    # if expression["expression"][caller_context.get_key()] == "FunctionCallOptions":
-    #     call_with_options = expression["expression"]
-    #     for idx, name in enumerate(call_with_options.get("names", [])):
-    #         option = parse_expression(call_with_options["options"][idx], caller_context)
-    #         if name == "value":
-    #             call_value = option
-    #         if name == "gas":
-    #             call_gas = option
-    #         if name == "salt":
-    #             call_salt = option
-
-    arguments = [parse_expression(a, ctx) for a in expr.arguments]
-
-    if isinstance(called, SuperCallExpression):
-        sp = SuperCallExpression(called, arguments, type_return)
-        sp.set_offset(expr.src, ctx.slither)
-        return sp
-    call_expression = CallExpression(called, arguments, type_return)
-    call_expression.set_offset(src, ctx.slither)
-
-    # Only available if the syntax {gas:, value:} was used
-    call_expression.call_gas = call_gas
-    call_expression.call_value = call_value
-    call_expression.call_salt = call_salt
-    return call_expression
+def parse_unhandled(expr: ExpressionT, ctx: CallerContext) -> "Expression":
+    raise Exception("unhandled expr", type(expr))
 
 
-def parse_member_access(expr: MemberAccessT, ctx: CallerContext) -> "Expression":
-    member_name = expr.member_name
-    member_type = expr.type_str
-    member_expression = parse_expression(expr.expression, ctx)
-
-    # todo
-    if str(member_expression) == "super":
-        super_name = parse_super_name(expr, True)
-        var = find_variable(super_name, ctx, is_super=True)
-        if var is None:
-            raise VariableNotFound("Variable not found: {}".format(super_name))
-        sup = SuperIdentifier(var)
-        sup.set_offset(expr.src, ctx.slither)
-        return sup
-
-    member_access = MemberAccess(member_name, member_type, member_expression)
-    member_access.set_offset(expr.src, ctx.slither)
-    if str(member_access) in SOLIDITY_VARIABLES_COMPOSED:
-        idx = Identifier(SolidityVariableComposed(str(member_access)))
-        idx.set_offset(expr.src, ctx.slither)
-        return idx
-    return member_access
+def parse_expression(expr: ExpressionT, ctx: CallerContext) -> "Expression":
+    return PARSERS.get(type(expr), parse_unhandled)(expr, ctx)
 
 
-def parse_unhandled(expr: ExpressionType, ctx: CallerContext) -> "Expression":
-    raise Exception("unhandled expr", expr.__class__)
-
-
-PARSERS = {
-    LiteralT: parse_literal,
-    UnaryOperationT: parse_unary_operation,
-    BinaryOperationT: parse_binary_operation,
-    IdentifierT: parse_identifier,
-    FunctionCallT: parse_function_call,
-    MemberAccessT: parse_member_access,
+PARSERS: Dict[type, Callable[[ExpressionT, CallerContext], "Expression"]] = {
+    ConditionalT: parse_conditional,
     AssignmentT: parse_assignment,
     TupleExpressionT: parse_tuple_expression,
+    UnaryOperationT: parse_unary_operation,
+    BinaryOperationT: parse_binary_operation,
+    FunctionCallT: parse_function_call,
+    FunctionCallOptionsT: parse_function_call_options,
+    NewExpressionT: parse_new_expression,
+    MemberAccessT: parse_member_access,
+    IndexAccessT: parse_index_access,
+    IndexRangeAccessT: parse_index_range_access,
+    IdentifierT: parse_identifier,
+    ElementaryTypeNameExpressionT: parse_elementary_type_name_expression,
+    LiteralT: parse_literal,
+
+    ModifierInvocationT: parse_modifier_invocation,
 }
-
-
-def parse_expression(expression: ExpressionType, caller_context: CallerContext) -> "Expression":
-    return PARSERS.get(expression.__class__, parse_unhandled)(expression, caller_context)
-
-    name = expression[caller_context.get_key()]
-    is_compact_ast = caller_context.is_compact_ast
-    src = expression["src"]
-
-    if name == "FunctionCallOptions":
-        # call/gas info are handled in parse_call
-        called = parse_expression(expression["expression"], caller_context)
-        assert isinstance(called, (MemberAccess, NewContract))
-        return called
-
-
-    elif name == "Conditional":
-        if is_compact_ast:
-            if_expression = parse_expression(expression["condition"], caller_context)
-            then_expression = parse_expression(expression["trueExpression"], caller_context)
-            else_expression = parse_expression(expression["falseExpression"], caller_context)
-        else:
-            children = expression["children"]
-            assert len(children) == 3
-            if_expression = parse_expression(children[0], caller_context)
-            then_expression = parse_expression(children[1], caller_context)
-            else_expression = parse_expression(children[2], caller_context)
-        conditional = ConditionalExpression(if_expression, then_expression, else_expression)
-        conditional.set_offset(src, caller_context.slither)
-        return conditional
-
-
-    elif name == "IndexAccess":
-        if is_compact_ast:
-            index_type = expression["typeDescriptions"]["typeString"]
-            left = expression["baseExpression"]
-            right = expression["indexExpression"]
-        else:
-            index_type = expression["attributes"]["type"]
-            children = expression["children"]
-            assert len(children) == 2
-            left = children[0]
-            right = children[1]
-        # IndexAccess is used to describe ElementaryTypeNameExpression
-        # if abi.decode is used
-        # For example, abi.decode(data, ...(uint[]) )
-        if right is None:
-            ret = parse_expression(left, caller_context)
-            # Nested array are not yet available in abi.decode
-            if isinstance(ret, ElementaryTypeNameExpression):
-                old_type = ret.type
-                ret.type = ArrayType(old_type, None)
-            return ret
-
-        left_expression = parse_expression(left, caller_context)
-        right_expression = parse_expression(right, caller_context)
-        index = IndexAccess(left_expression, right_expression, index_type)
-        index.set_offset(src, caller_context.slither)
-        return index
-
-    elif name == "ElementaryTypeNameExpression":
-        return _parse_elementary_type_name_expression(expression, is_compact_ast, caller_context)
-
-    # NewExpression is not a root expression, it's always the child of another expression
-    elif name == "NewExpression":
-
-        if is_compact_ast:
-            type_name = expression["typeName"]
-        else:
-            children = expression["children"]
-            assert len(children) == 1
-            type_name = children[0]
-
-        if type_name[caller_context.get_key()] == "ArrayTypeName":
-            depth = 0
-            while type_name[caller_context.get_key()] == "ArrayTypeName":
-                # Note: dont conserve the size of the array if provided
-                # We compute it directly
-                if is_compact_ast:
-                    type_name = type_name["baseType"]
-                else:
-                    type_name = type_name["children"][0]
-                depth += 1
-            if type_name[caller_context.get_key()] == "ElementaryTypeName":
-                if is_compact_ast:
-                    array_type = ElementaryType(type_name["name"])
-                else:
-                    array_type = ElementaryType(type_name["attributes"]["name"])
-            elif type_name[caller_context.get_key()] == "UserDefinedTypeName":
-                if is_compact_ast:
-                    array_type = parse_type(UnknownType(type_name["name"]), caller_context)
-                else:
-                    array_type = parse_type(
-                        UnknownType(type_name["attributes"]["name"]), caller_context
-                    )
-            elif type_name[caller_context.get_key()] == "FunctionTypeName":
-                array_type = parse_type(type_name, caller_context)
-            else:
-                raise ParsingError("Incorrect type array {}".format(type_name))
-            array = NewArray(depth, array_type)
-            array.set_offset(src, caller_context.slither)
-            return array
-
-        if type_name[caller_context.get_key()] == "ElementaryTypeName":
-            if is_compact_ast:
-                elem_type = ElementaryType(type_name["name"])
-            else:
-                elem_type = ElementaryType(type_name["attributes"]["name"])
-            new_elem = NewElementaryType(elem_type)
-            new_elem.set_offset(src, caller_context.slither)
-            return new_elem
-
-        assert type_name[caller_context.get_key()] == "UserDefinedTypeName"
-
-        if is_compact_ast:
-            contract_name = type_name["name"]
-        else:
-            contract_name = type_name["attributes"]["name"]
-        new = NewContract(contract_name)
-        new.set_offset(src, caller_context.slither)
-        return new
-
-    elif name == "ModifierInvocation":
-
-        if is_compact_ast:
-            called = parse_expression(expression["modifierName"], caller_context)
-            arguments = []
-            if expression["arguments"]:
-                arguments = [parse_expression(a, caller_context) for a in expression["arguments"]]
-        else:
-            children = expression["children"]
-            called = parse_expression(children[0], caller_context)
-            arguments = [parse_expression(a, caller_context) for a in children[1::]]
-
-        call = CallExpression(called, arguments, "Modifier")
-        call.set_offset(src, caller_context.slither)
-        return call
-
-    elif name == "IndexRangeAccess":
-        # For now, we convert array slices to a direct array access
-        # As a result the generated IR will lose the slices information
-        # As far as I understand, array slice are only used in abi.decode
-        # https://solidity.readthedocs.io/en/v0.6.12/types.html
-        # TODO: Investigate array slices usage and implication for the IR
-        base = parse_expression(expression["baseExpression"], caller_context)
-        return base
-
-    raise ParsingError("Expression not parsed %s" % name)
+# endregion

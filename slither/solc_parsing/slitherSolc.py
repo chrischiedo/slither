@@ -6,7 +6,8 @@ from typing import List, Dict
 
 from slither.core.declarations import Contract
 from slither.exceptions import SlitherException
-from slither.solc_parsing.types.types import SourceUnit, ContractDefinition, PragmaDirective, ImportDirective
+from slither.solc_parsing.types.types import SourceUnit, ContractDefinition, PragmaDirective, ImportDirective, \
+    StructDefinition, EnumDefinition
 
 logging.basicConfig()
 logger = logging.getLogger("SlitherSolcParsing")
@@ -29,7 +30,6 @@ class SlitherSolc:
 
         self._underlying_contract_to_parser: Dict[Contract, ContractSolc] = dict()
 
-        self._is_compact_ast = False
         self._core: SlitherCore = core
 
         self._all_functions_parser: List[FunctionSolc] = []
@@ -51,27 +51,6 @@ class SlitherSolc:
     def underlying_contract_to_parser(self) -> Dict[Contract, ContractSolc]:
         return self._underlying_contract_to_parser
 
-    ###################################################################################
-    ###################################################################################
-    # region AST
-    ###################################################################################
-    ###################################################################################
-
-    def get_key(self) -> str:
-        if self._is_compact_ast:
-            return "nodeType"
-        return "name"
-
-    def get_children(self) -> str:
-        if self._is_compact_ast:
-            return "nodes"
-        return "children"
-
-    @property
-    def is_compact_ast(self) -> bool:
-        return self._is_compact_ast
-
-    # endregion
     ###################################################################################
     ###################################################################################
     # region Parsing
@@ -112,15 +91,12 @@ class SlitherSolc:
         node = sniff(data_loaded)(data_loaded)
         print(dumps(node))
 
-        if "nodeType" in data_loaded:
-            self._is_compact_ast = True
-
         if "sourcePaths" in data_loaded:
             for sourcePath in data_loaded["sourcePaths"]:
                 if os.path.isfile(sourcePath):
                     self._core.add_source_code(sourcePath)
 
-        if data_loaded[self.get_key()] == "root":
+        if 'name' in data_loaded and data_loaded['name'] == "root":
             self._solc_version = "0.3"
             logger.error("solc <0.4 is not supported")
             return
@@ -140,45 +116,33 @@ class SlitherSolc:
 
                 self._underlying_contract_to_parser[contract] = contract_parser
             elif isinstance(child, PragmaDirective):
-                if self._is_compact_ast:
-                    pragma = Pragma(contract_data["literals"])
-                else:
-                    pragma = Pragma(contract_data["attributes"]["literals"])
-                pragma.set_offset(contract_data["src"], self._core)
+                pragma = Pragma(child.literals)
+                pragma.set_offset(child.src, self._core)
                 self._core.pragma_directives.append(pragma)
             elif isinstance(child, ImportDirective):
-                if self.is_compact_ast:
-                    import_directive = Import(contract_data["absolutePath"])
-                else:
-                    import_directive = Import(contract_data["attributes"]["absolutePath"])
-                import_directive.set_offset(contract_data["src"], self._core)
+                import_directive = Import(child.path)
+                import_directive.set_offset(child.src, self._core)
                 self._core.import_directives.append(import_directive)
-
-            elif contract_data[self.get_key()] in ["StructDefinition", "EnumDefinition"]:
-                # This can only happen for top-level structure and enum
-                # They were introduced with 0.6.5
-                assert self._is_compact_ast  # Do not support top level definition for legacy AST
-                fake_contract_data = {
-                    "name": f"SlitherInternalTopLevelContract{self._top_level_contracts_counter}",
-                    "id": -1000 + self._top_level_contracts_counter,  # TODO: determine if collission possible
-                    "linearizedBaseContracts": [],
-                    "fullyImplemented": True,
-                    "contractKind": "SLitherInternal",
-                }
-                self._top_level_contracts_counter += 1
+            elif isinstance(child, StructDefinition) or isinstance(child, EnumDefinition):
                 contract = Contract()
-                top_level_contract = ContractSolc(self, contract, fake_contract_data)
+                top_level_contract = ContractSolc(self, contract, ContractDefinition(
+                    kind="slitherInternal",
+                    base=[],
+                    nodes=[],
+                    name=f"SlitherInternalTopLevelContract{self._top_level_contracts_counter}",
+                    visibility="public",
+                    src=child.src,
+                    id=-1000 + self._top_level_contracts_counter,  # TODO: determine if collision possible
+                ))
                 contract.is_top_level = True
-                contract.set_offset(contract_data["src"], self._core)
+                contract.set_offset(child.src, self._core)
+                self._top_level_contracts_counter += 1
 
-                if contract_data[self.get_key()] == "StructDefinition":
-                    top_level_contract._structuresNotParsed.append(
-                        contract_data
-                    )  # Todo add proper setters
+                # TODO: add proper setters
+                if isinstance(child, StructDefinition):
+                    top_level_contract._structuresNotParsed.append(child)
                 else:
-                    top_level_contract._enumsNotParsed.append(
-                        contract_data
-                    )  # Todo add proper setters
+                    top_level_contract._enumsNotParsed.append(child)
 
                 self._underlying_contract_to_parser[contract] = top_level_contract
 

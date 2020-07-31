@@ -16,7 +16,7 @@ from slither.solc_parsing.expressions.expression_parsing import parse_expression
 from slither.solc_parsing.types.types import ASTNode, Block, IfStatement, ForStatement, WhileStatement, \
     VariableDeclarationStatement, TryStatement, TryCatchClause, VariableDeclaration, ExpressionStatement, \
     TupleExpression, Identifier, Assignment, ParameterList, Return, Continue, Break, EmitStatement, Throw, \
-    FunctionDefinition, ModifierInvocation
+    FunctionDefinition, ModifierInvocation, InlineAssembly
 from slither.solc_parsing.variables.local_variable import LocalVariableSolc
 from slither.solc_parsing.variables.local_variable_init_from_tuple import (
     LocalVariableInitFromTupleSolc,
@@ -175,16 +175,17 @@ class FunctionSolc:
             self._function.function_type = FunctionType.CONSTRUCTOR
 
     def _analyze_attributes(self):
-        if self._functionNotParsed.mutability == 'payable':
-            self._function.payable = True
-        elif self._functionNotParsed.mutability == 'pure':
-            self._function.pure = True
-            self._function.view = True
-        elif self._functionNotParsed.mutability == 'view':
-            self._function.view = True
+        if isinstance(self._functionNotParsed, FunctionDefinition):
+            if self._functionNotParsed.mutability == 'payable':
+                self._function.payable = True
+            elif self._functionNotParsed.mutability == 'pure':
+                self._function.pure = True
+                self._function.view = True
+            elif self._functionNotParsed.mutability == 'view':
+                self._function.view = True
 
-        if self._functionNotParsed.kind == "constructor":
-            self._function.function_type = FunctionType.CONSTRUCTOR
+            if self._functionNotParsed.kind == "constructor":
+                self._function.function_type = FunctionType.CONSTRUCTOR
 
         self._function.visibility = self._functionNotParsed.visibility
 
@@ -395,8 +396,7 @@ class FunctionSolc:
             if isinstance(stmt.initial_value, TupleExpression) \
                     and len(stmt.initial_value.components) == len(stmt.variables):
 
-                for i in range(len(stmt.variables)):
-                    variable = stmt.variables[i]
+                for i, variable in enumerate(stmt.variables):
                     if variable is None:
                         continue
 
@@ -409,8 +409,7 @@ class FunctionSolc:
 
                 return node
             else:
-                for i in range(len(stmt.variables)):
-                    variable = stmt.variables[i]
+                for i, variable in enumerate(stmt.variables):
                     if not variable:
                         continue
 
@@ -501,6 +500,31 @@ class FunctionSolc:
 
         return return_node
 
+    def _parse_inline_assembly(self, stmt: InlineAssembly, node: NodeSolc) -> NodeSolc:
+        self._function.contains_assembly = True
+
+        if stmt.ast:
+            if isinstance(stmt.ast, dict):
+                # Added with solc 0.6 - the yul code is an AST
+                yul_object = self._new_yul_block(stmt.src)
+                entrypoint = yul_object.entrypoint
+                exitpoint = yul_object.convert(stmt.ast)
+
+                # technically, entrypoint and exitpoint are YulNodes and we should be returning a NodeSolc here
+                # but they both expose an underlying_node so oh well
+                link_underlying_nodes(node, entrypoint)
+                return exitpoint
+            else:
+                # Added with solc 0.4.12
+                asm_node = self._new_node(NodeType.ASSEMBLY, stmt.src)
+                asm_node.underlying_node.add_inline_asm(stmt.ast)
+                link_underlying_nodes(node, asm_node)
+                return node
+        else:
+            asm_node = self._new_node(NodeType.ASSEMBLY, stmt.src)
+            link_underlying_nodes(node, asm_node)
+            return node
+
     def _parse_unhandled(self, stmt: ASTNode, node: NodeSolc) -> NodeSolc:
         raise Exception("unhandled ast node", stmt.__class__)
 
@@ -521,6 +545,7 @@ class FunctionSolc:
         Break: _parse_break,
         Throw: _parse_throw,
         EmitStatement: _parse_emit_statement,
+        InlineAssembly: _parse_inline_assembly,
     }
 
     def _parse_cfg(self, cfg: ASTNode):

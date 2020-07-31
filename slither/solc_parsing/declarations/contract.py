@@ -34,7 +34,7 @@ class ContractSolc:
         self._modifiersNotParsed: List[ModifierDefinition] = []
         self._functions_no_params: List[FunctionSolc] = []
         self._modifiers_no_params: List[ModifierSolc] = []
-        self._eventsNotParsed: List[EventSolc] = []
+        self._eventsNotParsed: List[EventDefinition] = []
         self._variablesNotParsed: List[VariableDeclaration] = []
         self._enumsNotParsed: List[EnumDefinition] = []
         self._structuresNotParsed: List[StructDefinition] = []
@@ -105,21 +105,9 @@ class ContractSolc:
     ###################################################################################
     ###################################################################################
 
-    def get_key(self) -> str:
-        return self._slither_parser.get_key()
-
-    def get_children(self, key="nodes") -> str:
-        if self.is_compact_ast:
-            return key
-        return "children"
-
     @property
     def remapping(self) -> Dict[str, str]:
         return self._remapping
-
-    @property
-    def is_compact_ast(self) -> bool:
-        return self._slither_parser.is_compact_ast
 
     # endregion
     ###################################################################################
@@ -136,7 +124,6 @@ class ContractSolc:
             self._contract.kind = self._data.kind
 
         self._linearized_base_contracts = self._data.linearized_base_contracts
-        # self._contract.fullyImplemented = attributes["fullyImplemented"]
 
         # Parse base contract information
         # todo
@@ -233,28 +220,18 @@ class ContractSolc:
                 raise ParsingError("Unknown contract item: ", node.__class__)
         return
 
-    def _parse_struct(self, struct: Dict):
-        if self.is_compact_ast:
-            name = struct["name"]
-            attributes = struct
+    def _parse_struct(self, struct: StructDefinition):
+        name = struct.name
+        if struct.canonical_name:
+            canonical_name = struct.canonical_name
         else:
-            name = struct["attributes"][self.get_key()]
-            attributes = struct["attributes"]
-        if "canonicalName" in attributes:
-            canonicalName = attributes["canonicalName"]
-        else:
-            canonicalName = self._contract.name + "." + name
-
-        if self.get_children("members") in struct:
-            children = struct[self.get_children("members")]
-        else:
-            children = []  # empty struct
+            canonical_name = self._contract.name + "." + name
 
         st = Structure()
         st.set_contract(self._contract)
-        st.set_offset(struct["src"], self._contract.slither)
+        st.set_offset(struct.src, self._contract.slither)
 
-        st_parser = StructureSolc(st, name, canonicalName, children, self)
+        st_parser = StructureSolc(st, name, canonical_name, struct.members, self)
         self._contract.structures_as_dict[name] = st
         self._structures_parser.append(st_parser)
 
@@ -264,7 +241,7 @@ class ContractSolc:
 
         for struct in self._structuresNotParsed:
             self._parse_struct(struct)
-        self._structuresNotParsed = None
+        self._structuresNotParsed.clear()
 
     def parse_state_variables(self):
         for father in self._contract.inheritance_reverse:
@@ -283,9 +260,9 @@ class ContractSolc:
             self._contract.variables_as_dict[var.name] = var
             self._contract.add_variables_ordered([var])
 
-    def _parse_modifier(self, modifier_data: Dict):
+    def _parse_modifier(self, modifier_data: ModifierDefinition):
         modif = Modifier()
-        modif.set_offset(modifier_data["src"], self._contract.slither)
+        modif.set_offset(modifier_data.src, self._contract.slither)
         modif.set_contract(self._contract)
         modif.set_contract_declarer(self._contract)
 
@@ -299,7 +276,7 @@ class ContractSolc:
     def parse_modifiers(self):
         for modifier in self._modifiersNotParsed:
             self._parse_modifier(modifier)
-        self._modifiersNotParsed = None
+        self._modifiersNotParsed.clear()
 
     def _parse_function(self, function_data: FunctionDefinition):
         func = Function()
@@ -319,7 +296,7 @@ class ContractSolc:
         for function in self._functionsNotParsed:
             self._parse_function(function)
 
-        self._functionsNotParsed = None
+        self._functionsNotParsed.clear()
 
     # endregion
     ###################################################################################
@@ -368,7 +345,7 @@ class ContractSolc:
             self._contract.set_modifiers(modifiers)
         except (VariableNotFound, KeyError) as e:
             self.log_incorrect_parsing(f"Missing params {e}")
-        self._modifiers_no_params = []
+        self._modifiers_no_params.clear()
 
     def analyze_params_functions(self):
         try:
@@ -388,7 +365,7 @@ class ContractSolc:
             self._contract.set_functions(functions)
         except (VariableNotFound, KeyError) as e:
             self.log_incorrect_parsing(f"Missing params {e}")
-        self._functions_no_params = []
+        self._functions_no_params.clear()
 
     def _analyze_params_elements(
         self,
@@ -494,30 +471,17 @@ class ContractSolc:
             for father in self._contract.inheritance:
                 self._contract.using_for.update(father.using_for)
 
-            if self.is_compact_ast:
-                for using_for in self._usingForNotParsed:
-                    lib_name = parse_type(using_for["libraryName"], self)
-                    if "typeName" in using_for and using_for["typeName"]:
-                        type_name = parse_type(using_for["typeName"], self)
-                    else:
-                        type_name = "*"
-                    if type_name not in self._contract.using_for:
-                        self._contract.using_for[type_name] = []
-                    self._contract.using_for[type_name].append(lib_name)
-            else:
-                for using_for in self._usingForNotParsed:
-                    children = using_for[self.get_children()]
-                    assert children and len(children) <= 2
-                    if len(children) == 2:
-                        new = parse_type(children[0], self)
-                        old = parse_type(children[1], self)
-                    else:
-                        new = parse_type(children[0], self)
-                        old = "*"
-                    if old not in self._contract.using_for:
-                        self._contract.using_for[old] = []
-                    self._contract.using_for[old].append(new)
-            self._usingForNotParsed = []
+            for item in self._usingForNotParsed:
+                lib_name = parse_type(item.library, self)
+                if item.typename:
+                    type_name = parse_type(item.typename, self)
+                else:
+                    type_name = "*"
+
+                if type_name not in self._contract.using_for:
+                    self._contract.using_for[type_name] = []
+                self._contract.using_for[type_name].append(lib_name)
+            self._usingForNotParsed.clear()
         except (VariableNotFound, KeyError) as e:
             self.log_incorrect_parsing(f"Missing using for {e}")
 
@@ -530,33 +494,25 @@ class ContractSolc:
                 # for enum, we can parse and analyze it
                 # at the same time
                 self._analyze_enum(enum)
-            self._enumsNotParsed = None
+            self._enumsNotParsed.clear()
         except (VariableNotFound, KeyError) as e:
             self.log_incorrect_parsing(f"Missing enum {e}")
 
-    def _analyze_enum(self, enum):
+    def _analyze_enum(self, enum: EnumDefinition):
         # Enum can be parsed in one pass
-        if self.is_compact_ast:
-            name = enum["name"]
-            canonicalName = enum["canonicalName"]
+        name = enum.name
+        if enum.canonical_name:
+            canonical_name = enum.canonical_name
         else:
-            name = enum["attributes"][self.get_key()]
-            if "canonicalName" in enum["attributes"]:
-                canonicalName = enum["attributes"]["canonicalName"]
-            else:
-                canonicalName = self._contract.name + "." + name
+            canonical_name = self._contract.name + "." + enum.name
         values = []
-        for child in enum[self.get_children("members")]:
-            assert child[self.get_key()] == "EnumValue"
-            if self.is_compact_ast:
-                values.append(child["name"])
-            else:
-                values.append(child["attributes"][self.get_key()])
+        for child in enum.members:
+            values.append(child.name)
 
-        new_enum = Enum(name, canonicalName, values)
+        new_enum = Enum(name, canonical_name, values)
         new_enum.set_contract(self._contract)
-        new_enum.set_offset(enum["src"], self._contract.slither)
-        self._contract.enums_as_dict[canonicalName] = new_enum
+        new_enum.set_offset(enum.src, self._contract.slither)
+        self._contract.enums_as_dict[canonical_name] = new_enum
 
     def _analyze_struct(self, struct: StructureSolc):
         struct.analyze()
@@ -584,7 +540,7 @@ class ContractSolc:
         except (VariableNotFound, KeyError) as e:
             self.log_incorrect_parsing(f"Missing event {e}")
 
-        self._eventsNotParsed = None
+        self._eventsNotParsed.clear()
 
     # endregion
     ###################################################################################
@@ -599,15 +555,15 @@ class ContractSolc:
         This is used only if something went wrong with the inheritance parsing
         :return:
         """
-        self._functionsNotParsed = []
-        self._modifiersNotParsed = []
-        self._functions_no_params = []
-        self._modifiers_no_params = []
-        self._eventsNotParsed = []
-        self._variablesNotParsed = []
-        self._enumsNotParsed = []
-        self._structuresNotParsed = []
-        self._usingForNotParsed = []
+        self._functionsNotParsed.clear()
+        self._modifiersNotParsed.clear()
+        self._functions_no_params.clear()
+        self._modifiers_no_params.clear()
+        self._eventsNotParsed.clear()
+        self._variablesNotParsed.clear()
+        self._enumsNotParsed.clear()
+        self._structuresNotParsed.clear()
+        self._usingForNotParsed.clear()
 
     # endregion
     ###################################################################################

@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 
 
 class ASTNode:
@@ -18,20 +18,20 @@ class SourceUnit(ASTNode):
 
 
 class Declaration(ASTNode):
-    __slots__ = "name", "visibility"
+    __slots__ = "name", "canonical_name", "visibility"
 
-    def __init__(self, name: str, visibility: str, **kwargs):
+    def __init__(self, name: str, canonical_name: Optional[str], visibility: Optional[str], **kwargs):
         super().__init__(**kwargs)
         self.name = name
+        self.canonical_name = canonical_name
         self.visibility = visibility
 
 
 class PragmaDirective(ASTNode):
-    __slots__ = "tokens", "literals"
+    __slots__ = "literals"
 
-    def __init__(self, tokens: List[str], literals: List[str], **kwargs):
+    def __init__(self, literals: List[str], **kwargs):
         super().__init__(**kwargs)
-        self.tokens = tokens
         self.literals = literals
 
 
@@ -43,6 +43,7 @@ class ImportDirective(Declaration):
         self.path = path
 
 
+# kind can be: "interface", "contract", "library"
 class ContractDefinition(Declaration):
     __slots__ = "kind", "linearized_base_contracts", "nodes"
 
@@ -56,7 +57,7 @@ class ContractDefinition(Declaration):
 class InheritanceSpecifier(ASTNode):
     __slots__ = "basename", "args"
 
-    def __init__(self, basename: str, args: List['Expression'], **kwargs):
+    def __init__(self, basename: 'UserDefinedTypeName', args: Optional[List['Expression']], **kwargs):
         super().__init__(**kwargs)
         self.basename = basename
         self.args = args
@@ -80,6 +81,14 @@ class StructDefinition(Declaration):
 
 
 class EnumDefinition(Declaration):
+    __slots__ = "members"
+
+    def __init__(self, members: List['EnumValue'], **kwargs):
+        super().__init__(**kwargs)
+        self.members = members
+
+
+class EnumValue(Declaration):
     pass
 
 
@@ -100,6 +109,8 @@ class CallableDeclaration(Declaration):
         self.rets = rets
 
 
+# mutability can be: "pure", "view", "nonpayable", "payable"
+# kind can be: "function", "constructor", "fallback", "receive"
 class FunctionDefinition(CallableDeclaration):
     __slots__ = "mutability", "kind", "modifiers", "body"
 
@@ -114,7 +125,7 @@ class FunctionDefinition(CallableDeclaration):
 class VariableDeclaration(Declaration):
     __slots__ = "typename", "value", "type_str", "constant"
 
-    def __init__(self, typename: 'TypeName', value: 'Expression', type_str: str, constant: bool, **kwargs):
+    def __init__(self, typename: 'TypeName', value: Optional['Expression'], type_str: str, constant: bool, **kwargs):
         super().__init__(**kwargs)
         self.type_str = type_str
         self.value = value
@@ -133,7 +144,7 @@ class ModifierDefinition(CallableDeclaration):
 class ModifierInvocation(ASTNode):
     __slots__ = "modifier", "args"
 
-    def __init__(self, modifier: str, args: List['Expression'], **kwargs):
+    def __init__(self, modifier: 'Identifier', args: Optional[List['Expression']], **kwargs):
         super().__init__(**kwargs)
         self.modifier = modifier
         self.args = args
@@ -154,18 +165,18 @@ class TypeName(ASTNode):
 class ElementaryTypeName(TypeName):
     __slots__ = "name", "mutability"
 
-    def __init__(self, name: str, mutability: str, **kwargs):
+    def __init__(self, name: str, mutability: Optional[str], **kwargs):
         super().__init__(**kwargs)
         self.name = name
         self.mutability = mutability
 
 
 class UserDefinedTypeName(TypeName):
-    __slots__ = "name_path"
+    __slots__ = "name"
 
-    def __init__(self, name_path: str, **kwargs):
+    def __init__(self, name: str, **kwargs):
         super().__init__(**kwargs)
-        self.name_path = name_path
+        self.name = name
 
 
 class FunctionTypeName(TypeName):
@@ -202,11 +213,10 @@ class Statement(ASTNode):
 
 
 class InlineAssembly(Statement):
-    __slots__ = "dialect", "ast"
+    __slots__ = "ast"
 
-    def __init__(self, dialect: str, ast: Dict, **kwargs):
+    def __init__(self, ast: Union[Dict, str], **kwargs):
         super().__init__(**kwargs)
-        self.dialect = dialect
         self.ast = ast
 
 
@@ -235,7 +245,7 @@ class IfStatement(Statement):
 class TryCatchClause(ASTNode):
     __slots__ = "error_name", "params", "block"
 
-    def __init__(self, error_name: str, params: 'ParameterList', block: Block, **kwargs):
+    def __init__(self, error_name: str, params: Optional['ParameterList'], block: Block, **kwargs):
         super().__init__(**kwargs)
         self.error_name = error_name
         self.params = params
@@ -381,6 +391,7 @@ class BinaryOperation(Expression):
         self.right = right
 
 
+# kind can be: "functionCall", "typeConversion", "structConstructorCall"
 class FunctionCall(Expression):
     __slots__ = "kind", "expression", "arguments", "names"
 
@@ -393,13 +404,13 @@ class FunctionCall(Expression):
 
 
 class FunctionCallOptions(Expression):
-    __slots__ = "expression", "options", "names"
+    __slots__ = "expression", "names", "options"
 
-    def __init__(self, expression: Expression, options: List[Expression], names: List[str], **kwargs):
+    def __init__(self, expression: Expression, names: List[str], options: List[Expression], **kwargs):
         super().__init__(**kwargs)
         self.expression = expression
-        self.options = options
         self.names = names
+        self.options = options
 
 
 class NewExpression(Expression):
@@ -422,7 +433,7 @@ class MemberAccess(Expression):
 class IndexAccess(Expression):
     __slots__ = "base", "index"
 
-    def __init__(self, base: Expression, index: Expression, **kwargs):
+    def __init__(self, base: Expression, index: Optional[Expression], **kwargs):
         super().__init__(**kwargs)
         self.base = base
         self.index = index

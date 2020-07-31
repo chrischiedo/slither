@@ -1,15 +1,10 @@
 import logging
-from typing import Dict, Optional, Union
-
-from slither.solc_parsing.expressions.expression_parsing import parse_expression
+from typing import Optional, Union, TypeVar, Generic
 
 from slither.core.variables.variable import Variable
-
-from slither.solc_parsing.solidity_types.type_parsing import parse_type, UnknownType
-
-from slither.core.solidity_types.elementary_type import ElementaryType, NonElementaryType
-from slither.solc_parsing.exceptions import ParsingError
-from slither.solc_parsing.types.types import VariableDeclarationStatement, Expression, VariableDeclaration
+from slither.solc_parsing.expressions.expression_parsing import parse_expression
+from slither.solc_parsing.solidity_types.type_parsing import parse_type
+from slither.solc_parsing.types.types import VariableDeclarationStatement, Expression, VariableDeclaration, TypeName
 
 logger = logging.getLogger("VariableDeclarationSolcParsing")
 
@@ -24,8 +19,11 @@ class MultipleVariablesDeclaration(Exception):
     pass
 
 
-class VariableDeclarationSolc:
-    def __init__(self, variable: Variable, variable_data: Union[VariableDeclaration, VariableDeclarationStatement]):
+T = TypeVar('T', bound=Variable)
+
+
+class VariableDeclarationSolc(Generic[T]):
+    def __init__(self, variable: T, variable_data: Union[VariableDeclaration, VariableDeclarationStatement]):
         """
             A variable can be declared through a statement, or directly.
             If it is through a statement, the following children may contain
@@ -36,7 +34,7 @@ class VariableDeclarationSolc:
 
         self._variable = variable
         self._was_analyzed = False
-        self._elem_to_parse = None
+        self._elem_to_parse: Optional[Union[TypeName, str]] = None
         self._initializedNotParsed = None
 
         self._reference_id = None
@@ -50,7 +48,7 @@ class VariableDeclarationSolc:
             self._init_from_declaration(variable_data, variable_data.value)
 
     @property
-    def underlying_variable(self) -> Variable:
+    def underlying_variable(self) -> T:
         return self._variable
 
     @property
@@ -80,7 +78,7 @@ class VariableDeclarationSolc:
 
         self._elem_to_parse = var.typename
         if not var.typename:
-            self._elem_to_parse = UnknownType(var.type_str)
+            self._elem_to_parse = var.type_str
 
         self._initializedNotParsed = init
         if init:
